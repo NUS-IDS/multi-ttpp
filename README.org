@@ -1,0 +1,47 @@
+* Learning multivariate temporal point processes via the time-change theorem
+
+  The repo contains the source code for the algorithms and results described in the paper "Learning multivariate temporal point processes via the time-change theorem" by Guilherme Augusto Zagatti, See-Kiong Ng, and Stéphane Bressan.
+
+  The repo is organised according to the following source tree.
+
+  #+begin_src
+  .
+  ├── bin
+  │   ├── benchmark.py    # main entry point for benchmarking models trained from the CLI
+  │   ├── evaluate.py     # main entry point for evaluating models trained from the CLI
+  │   ├── experiment.py   # main entry point for training from the CLI
+  │   ├── run_multiple.py # run multiple experiments and validations
+  │   └── sahp_to_ttpp.py # convert SAHP data to TTPP format
+  ├── multittpp
+  │   ├── config.py       # default configurations
+  │   ├── data.py         # data loaders
+  │   ├── flows           # implementation of triangular maps for multi TPP
+  │   │   ├── affine.py
+  │   │   ├── base.py
+  │   │   ├── block_diagonal.py
+  │   │   ├── cumsum.py
+  │   │   ├── exp.py
+  │   │   ├── __init__.py
+  │   │   ├── sigmoid.py
+  │   │   ├── spline.py
+  │   │   ├── transformer.py
+  │   │   └── utils.py
+  │   ├── __init__.py
+  │   ├── models          # implementation of multi TPP models
+  │   │   ├── base.py     # base model class
+  │   │   └── __init__.py # concrete models
+  │   ├── plot.py         # plot helpers
+  │   ├── trainer.py      # trainer class which manages all training and validation routines
+  │   └── utils.py        # miscellaneous utilities
+  ├── notebooks
+  │   └── plots.org       # paper plots
+  ├── README.org
+  ├── requirements.txt
+  ├── setup.py
+  └── tests               # unit tests
+      ├── conftest.py
+      ├── test_flows.py   # test all flows are invertible
+      └── test_models.py
+
+  6 directories, 30 files
+  #+end_src

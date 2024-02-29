@@ -1,0 +1,417 @@
+* Paper plots
+
+  #+begin_src python
+  import torch
+  import pickle
+  import pandas as pd
+  import numpy as np
+  
+  import matplotlib as mpl
+  import matplotlib.pyplot as plt
+
+  from pathlib import Path
+  
+  mpl.rc('font', family="sans-serif", weight="normal", size=8.5)
+  mpl.rcParams['pdf.fonttype'] = 42
+  mpl.rcParams['ps.fonttype'] = 42
+  
+  %load_ext autoreload
+  %autoreload 1
+  %aimport multittpp
+  %aimport multittpp.plot
+  %aimport multittpp.trainer
+  %aimport multittpp.models
+  %aimport multittpp.models.base
+  
+  device=3
+
+  with open("./checkpoints/runs.pkl", "rb") as f:
+      runs = pickle.load(f)
+
+  with open("./checkpoints/best-runs.pkl", "rb") as f:
+      best_runs = pickle.load(f)
+
+  # assert only one best runs per model_name x dataset combination
+  assert (best_runs.value_counts(["model_name", "dataset"]) == 1).all()
+
+  models = {"ModulatedRenewal": "MultiMRP", "TriTPP": "MultiTriTPP", "SplineTransformer": "MultiTraTPP"}
+  short_model_names = {"ModulatedRenewal": "mrp", "TriTPP": "tri", "SplineTransformer": "trans"}
+
+  datasets = {"yelp": "Yelp", "simulated": "Hawkes", "retweet": "Retweet", "stackoverflow": "SO", "mimic": "MIMIC", "mooc": "MOOC"}
+
+  ckps = {}
+  for i, best in best_runs.iterrows():
+      model_name = short_model_names[best["model_name"]]
+      dataset = best["dataset"].lower()
+      ckps[f"{model_name}-{dataset}"] = best["ckp"]
+  
+  ckp = ckps["tri-simulated"]
+  trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckp, device=device)
+  #+end_src
+
+** Evaluation metrics
+
+   Code snippet to evaluate selected experiments.
+
+   #+begin_src python
+   ckp = ckps["tri-simulated"]
+   trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckp, device=device)
+   evaluate_metrics = ["LOSS", "MAPE_SAMPLED", "TOP1_ACC_SAMPLED_NONCOND", "TOP3_ACC_SAMPLED_NONCOND"]
+   trainer.evaluate(
+       "test",
+       evaluate_metrics,
+       verbose=True,
+   )
+   #+end_src
+
+** Intensity rate plots
+
+   Define the parameters of the simulated data.
+
+   #+begin_src python
+   import torch.nn.functional as F
+
+   adj = torch.ones((2,2), device=trainer.config.device)
+   baselines = torch.tensor([ 0.1, 0.2], device=trainer.config.device)
+   kernels = [
+       [
+           lambda t: 0.2*(0.5 + t)**(-1.3),
+           lambda t: 0.03*torch.exp(-0.3*t),
+       ],
+       [
+           lambda t: 0.05*torch.exp(-0.2*t) + 0.16*torch.exp(-0.8*t),
+           lambda t: torch.where((t >= 0) & (t <= 4), F.relu(torch.sin(t) / 8), 0.),
+       ]
+   ]
+
+   dt = 0.2
+   t_max = 200
+   n_marks = 2
+   #+end_src
+
+   Draw the intensity for the simulated data.
+
+   #+begin_src python
+   dataset = "simulated"
+   for i, (model_name, short_name) in enumerate(short_model_names.items()):
+       trainer.logger.handlers.clear()
+       trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckps[f"{short_name}-{dataset}"], device=device, val_batch_size=8)
+
+       for _, i, batch in trainer.batch("test", grad=False, verbose=True):
+           y = batch.in_times
+           k = batch.in_types
+           yT_pred, intensity_pred = trainer.model.intensity_func(y, k, dt, t_max)
+           break
+           
+       yT, intensity = multittpp.hawkes_intensity(y, k, n_marks, dt, t_max, adj, baselines, kernels)
+       fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, figsize=(7, 1.2))
+       fig = multittpp.plot.plot_intensity(
+           6,
+           intensity_pred,
+           yT_pred,
+           kix=0,
+           intensity=intensity,
+           yT=yT,
+           y=y,
+           k=k,
+           ax=ax,
+           y_label_extra=models[model_name],
+           title=None,
+           show=False,
+       )
+       ax.get_yaxis().set_major_formatter(
+           mpl.ticker.FuncFormatter(mpl.ticker.StrMethodFormatter('{x:,.1f}'))
+       )
+       ax.get_xaxis().set_visible(False)
+       fig.tight_layout()
+       plt.show()
+       fig.savefig(f"./assets/{models[model_name]}-hawkes-predicted-intensity.pdf")
+       fig.savefig(f"./assets/{models[model_name]}-hawkes-predicted-intensity.svg")
+   #+end_src
+
+   Draw the intensity for the retweet dataset.
+
+   #+begin_src python
+   dataset = "retweet"
+   for i, (model_name, short_name) in enumerate(short_model_names.items()):
+       trainer.logger.handlers.clear()
+       trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckps[f"{short_name}-{dataset}"], device=device, val_batch_size=8)
+
+       dt = 70
+       t_max = 70_000
+
+       for _, i, batch in trainer.batch("test", grad=False, verbose=True):
+           y = batch.in_times
+           k = batch.in_types
+           yT_pred, intensity_pred = trainer.model.intensity_func(y, k, dt, t_max)
+           break
+
+       fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, figsize=(7, 1.2))
+       fig = multittpp.plot.plot_intensity(
+           0,
+           intensity_pred,
+           yT_pred,
+           y=y,
+           k=k,
+           kix=1,
+           t_max=t_max,
+           ax=ax,
+           y_label_extra=models[model_name],
+           title=None,
+           show=False,
+       )
+       fig.tight_layout()
+       ax.get_yaxis().set_major_formatter(
+           mpl.ticker.FuncFormatter(mpl.ticker.StrMethodFormatter('{x:,.4f}'))
+       )
+       ax.get_xaxis().set_major_formatter(
+           mpl.ticker.FuncFormatter(mpl.ticker.StrMethodFormatter('{x:,.0f}'))
+       )
+       ax.get_xaxis().set_visible(False)
+       fig.tight_layout()
+       plt.show()
+       fig.savefig(f"./assets/{models[model_name]}-retweet-predicted-intensity.pdf")
+       fig.savefig(f"./assets/{models[model_name]}-retweet-predicted-intensity.svg")
+   #+end_src
+
+** QQ-Plots
+
+   First we produce a QQ-plot for a single dataset.
+
+   #+begin_src python
+   ckp = ckps["tri-mimic"]
+   trainer.logger.handlers.clear()
+   trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckp, device=device)
+   probs, quant_pred, flat_quant_pred = trainer.empirical_quantiles("test", n_threshold=50)
+   multittpp.plot.plot_qq(quant_pred, probs)
+   multittpp.plot.plot_qq([flat_quant_pred], probs)
+   multittpp.plot.plot_qq(quant_pred, probs, prob_axis=False)
+   #+end_src
+
+   We pre-compute the quantile values.
+
+   #+begin_src python
+   quantiles_path = Path("./checkpoints/quantiles.pkl")
+   if quantiles_path.exists():
+       with open(quantiles_path, "rb") as f:
+           probs = pickle.load(f)
+           quant_preds = pickle.load(f)
+           flat_quant_preds = pickle.load(f)
+   else:
+       quant_preds = {}
+       flat_quant_preds = {}
+       for short_name in short_model_names.values():
+           quant_preds[short_name] = {}
+           flat_quant_preds[short_name] = {}
+           for dataset in datasets.keys():
+               ckp = ckps[f"{short_name}-{dataset}"]
+               trainer.logger.handlers.clear()
+               trainer = multittpp.Trainer.load_from_checkpoint(checkpoint=ckp, device=device)
+               probs, quant_pred, flat_quant_pred = trainer.empirical_quantiles("test", n_threshold=50)
+               quant_preds[short_name][dataset] = quant_pred
+               flat_quant_preds[short_name][dataset] = [flat_quant_pred]
+   with open(quantiles_path, "wb") as f:
+       pickle.dump(probs, f)
+       pickle.dump(quant_preds, f)
+       pickle.dump(flat_quant_preds, f)
+   #+end_src
+
+   We plot the quantiles of the flattened data which features in the paper.
+
+   #+begin_src python
+   cols = 6
+   fig, ax = plt.subplots(1, cols, sharex=True, sharey=True, figsize=(7, 1.2))
+   for i, (dataset, dataset_title) in enumerate(datasets.items()):
+       axi = ax[i]
+       multittpp.plot.plot_qq(flat_quant_preds["tri"][dataset], probs, title=dataset_title, y_label_extra="MultiTriTPP", show=False, ax=axi, rasterized=True)
+       if (i//cols) < 1:
+           axi.get_xaxis().set_visible(False)
+       if (i%cols) > 0:
+           axi.get_yaxis().set_visible(False)
+   fig.tight_layout()
+   plt.show()
+   fig.savefig("./assets/MultiTriTPP-all-qqplots.pdf", dpi=350)
+   fig.savefig("./assets/MultiTriTPP-all-qqplots.svg", dpi=350)
+   #+end_src
+
+   We plot the quantiles of the marked data which features in the Supplementary Materials.
+
+   #+begin_src python
+   for i, (model_name, short_name) in enumerate(short_model_names.items()):
+       cols = 6
+       if i == 0:
+           fig, ax = plt.subplots(1, cols, sharex=True, sharey=True, figsize=(7, 1.2))
+       else:
+           fig, ax = plt.subplots(1, cols, sharex=True, sharey=True, figsize=(7, 1))
+       for j, (dataset, dataset_title) in enumerate(datasets.items()):
+           axj = ax[j]
+           if i > 0:
+               dataset_title = None
+           multittpp.plot.plot_qq(quant_preds[short_name][dataset], probs, title=dataset_title, show=False, ax=axj, y_label_extra=models[model_name], rasterized=True)
+           if (j//cols) < 1:
+               axj.get_xaxis().set_visible(False)
+           if (j%cols) > 0:
+               axj.get_yaxis().set_visible(False)
+       fig.tight_layout()
+       plt.show()
+       fig.savefig(f"./assets/{models[model_name]}-marked-qqplots.pdf")
+       fig.savefig(f"./assets/{models[model_name]}-marked-qqplots.svg", dpi=350)
+   #+end_src
+
+** Dataset sizes
+
+   Print all dataset sizes.
+
+   #+begin_src python
+   for dataset in ["yelp", "simulated", "retweet", "stackoverflow", "mimic", "mooc"]:
+       data = multittpp.data.load_dataset(dataset)[0]
+       B = {k: len(data[f"{k}_loader"].dataset) for k in ["train", "val", "test"]}
+       print(f"Dataset {dataset} size: train {B['train']:,d}, val {B['val']:,d}, test {B['test']:,d}")
+   #+end_src
+
+** Validation losses plots
+
+   Plot the validation losses of the best models with different random initialization seeds.
+
+   #+begin_src python
+   from bin.run_multiple import filter_runs
+
+   cols = 6
+   rows = 3
+   linewidth = 0.7
+   fig, ax = plt.subplots(3, cols, sharex="col", sharey="col", figsize=(7, 4))
+
+   for i, (model_name, model_title) in enumerate(models.items()):
+
+       for j, (dataset_name, dataset_title) in enumerate(datasets.items()):
+
+           axij = ax[i][j]
+
+           if (i%rows) == 0:
+               axij.set_title(dataset_title)
+
+           if (j%cols) == 0:
+               axij.set_ylabel(f"Loss per event\n{model_title}")
+
+           best = filter_runs(best_runs, model_name=model_name, dataset=dataset_name).iloc[0]
+           subset = filter_runs(
+               runs,
+               learning_rate=best["learning_rate"],
+               n_knots=best["n_knots"],
+               n_embd=best["n_embd"],
+               block_size=best["block_size"],
+               n_blocks=best["n_blocks"],
+               model_name=best["model_name"],
+               dataset=best["dataset"],
+           )
+           assert subset.shape[0] == 5
+
+           seed = list(subset.seed)
+           val_losses = list(subset.val_losses)
+
+           for k, loss in enumerate(val_losses):
+               axij.plot(loss, label=seed[k], linewidth=linewidth)
+
+   fig.tight_layout()
+   plt.show()
+   fig.savefig("./assets/val-losses.pdf")
+   #+end_src
+** Event generation benchmark
+
+   Prepare the data from pre-run benchmarks.
+
+   #+begin_src python
+   bench_means = {}
+   bench_sds = {}
+   for dataset, dataset_title in datasets.items():
+       bench_means[dataset] = []
+       bench_sds[dataset] = []
+       for model_name, short_name in short_model_names.items():
+           ckp = ckps[f"{short_name}-{dataset}"]
+           bench_path = ckp.parent / f"{ckp.stem}-benchmark.pkl"
+           if not bench_path.exists():
+               continue
+           with bench_path.open("rb") as f:
+               b = pickle.load(f)
+               # benchmark in nanoseconds, convert to microseconds
+               df = pd.DataFrame({k: v for k, v in zip(b["n_samples"], b["times"])}) / 1e3
+               df = df.melt(var_name="n_samples", value_name=models[model_name])
+               bench_means[dataset].append(df.groupby("n_samples").mean())
+               bench_sds[dataset].append(df.groupby("n_samples").std())
+       bench_means[dataset] = pd.concat(bench_means[dataset], axis=1)
+       bench_sds[dataset] = pd.concat(bench_sds[dataset], axis=1)
+   #+end_src
+
+   Prepare the data from GNTPP benchmarks.
+
+   #+begin_src python
+   gntpp_models = {
+       'Determ': 'DETER',
+       'Gompt': 'RMTPP',
+       'LogNorm': 'LogNorm',
+       'Gaussian': 'ERTPP',
+       'Weibull': 'WeibMix',
+       'FNN': 'FNNInt',
+       'SAHP': 'SAHP',
+       'THP': 'THP',
+       'Diffusion': 'TCDDM',
+       'VAE': 'TCVAE',
+       'GAN': 'TCGAN',
+       'CNF': 'TCCNF',
+       'ScoreMatch': 'TCNSN',
+   }
+   with open("../gntpp/experiments/benchmarks.pkl", "rb") as f:
+       gntpp_benchs = pickle.load(f)
+   gntpp_bench_means = {d: [] for d in datasets}
+   gntpp_bench_sds = {d: [] for d in datasets}
+   for i, (model_name, model_title) in enumerate(gntpp_models.items()):
+       if model_name not in gntpp_benchs:
+           continue
+       for dataset, dataset_title in datasets.items():
+           if dataset not in gntpp_benchs[model_name]:
+               continue
+           b = gntpp_benchs[model_name][dataset]
+           # benchmark in nanoseconds, convert to microseconds
+           df = pd.DataFrame({k: v for k, v in zip(b["n_samples"], b["times"])}) / 1e3
+           df = df.melt(var_name="n_samples", value_name=model_title)
+           gntpp_bench_means[dataset].append(df.groupby("n_samples").mean())
+           gntpp_bench_sds[dataset].append(df.groupby("n_samples").std())
+   gntpp_bench_means = {k: pd.concat(v, axis=1) for k, v in gntpp_bench_means.items()}
+   gntpp_bench_sds = {k: pd.concat(v, axis=1) for k, v in gntpp_bench_sds.items()}
+   #+end_src
+
+   Plot benchmarks.
+
+   #+begin_src python
+   rows, cols = 1, 6
+   fig, ax = plt.subplots(rows, cols, sharex=True, sharey=True, figsize=(7, 2))
+   for i, (dataset, dataset_title) in enumerate(datasets.items()):
+       # axi = ax[i//cols][i%cols]
+       axi = ax[i]
+       d = pd.concat((bench_means[dataset], gntpp_bench_means[dataset]), axis=1)
+       # d = bench_means[dataset]
+       d.plot(
+           title=dataset_title, logy=True, xlabel="Seq. length", ylabel="ms", ax=axi, legend=False, linewidth=0.5
+       )
+
+   colors = {}
+   for ax in fig.axes:
+       ax.get_xaxis().set_major_formatter(
+           mpl.ticker.FuncFormatter(mpl.ticker.StrMethodFormatter('{x:,.0f}'))
+       )
+   lines_labels = [ax.get_legend_handles_labels() for ax in fig.axes]
+   lines, labels = [sum(lol, []) for lol in zip(*lines_labels)]
+   for line, label in zip(lines, labels):
+       if label in colors:
+           color = colors[label]
+           line.set_c(color)
+           line.set_label("_" + line.get_label())
+       else:
+           colors[label] = line.get_c()
+
+   fig.legend(loc="right", frameon=False)
+   plt.tight_layout(rect=(0.0, 0, 0.8, 0.85))
+   plt.show()
+   fig.savefig(f"./assets/event-generation-benchmark.pdf")
+   fig.savefig(f"./assets/event-generation-benchmark.svg")
+   #+end_src
